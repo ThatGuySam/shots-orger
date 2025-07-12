@@ -6,4 +6,10 @@ export default antfu(
     type: 'lib',
     pnpm: true,
   },
+  {
+    rules: {
+      'no-console': ['error', { allow: ['warn', 'error', 'log'] }],
+      'node/prefer-global/process': 'off',
+    },
+  },
 )
