@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, rename, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
