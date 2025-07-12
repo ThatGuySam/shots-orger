@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "ignorePaths": [
+    "node_modules",
+    "dist",
+    "build",
+    "public",
+    "public/**",
+    "public/**/**",
+    "pnpm-lock.yaml"
+  ],
+  "words": [
+    "antfu",
+    "Baggins",
+    "Biodigital",
+    "bumpp",
+    "bundlesize",
+    "Carmack",
+    "cust",
+    "Edsger",
+    "esbuild",
+    "Holzmann",
+    "Hudsoni",
+    "Karlton",
+    "memcpy",
+    "nonpositive",
+    "orger",
+    "parseable",
+    "POCPOU",
+    "postcondition",
+    "postconditions",
+    "Rivacindela",
+    "sindresorhus",
+    "tinyexec",
+    "TOCTOU",
+    "vite",
+    "vitest",
+    "vlcsnap",
+    "VOPR"
+  ]
+}
