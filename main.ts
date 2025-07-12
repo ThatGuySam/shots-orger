@@ -276,6 +276,62 @@ async function organizeFiles(targetDir: string, rootDir?: string): Promise<{ pro
 }
 
 /**
+ * Assert that all year directories (not current year) contain 12 month directories
+ */
+async function assertYearDirectoriesComplete(rootDir: string): Promise<void> {
+  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
+  const currentYear = new Date().getFullYear()
+  const entries = await readdir(validatedRootDir)
+
+  // Find year directories (pattern: _YYYY)
+  const yearDirs = []
+  for (const entry of entries) {
+    if (/^_\d{4}$/.test(entry)) {
+      const entryPath = join(validatedRootDir, entry)
+      const entryStat = await stat(entryPath)
+      if (entryStat.isDirectory()) {
+        yearDirs.push(entry)
+      }
+    }
+  }
+
+  for (const yearDir of yearDirs) {
+    const year = Number.parseInt(yearDir.substring(1), 10)
+
+    // Skip current year (might be incomplete)
+    if (year === currentYear) {
+      continue
+    }
+
+    const yearPath = join(validatedRootDir, yearDir)
+    const monthEntries = await readdir(yearPath)
+
+    // Filter to only directories
+    const monthDirs = []
+    for (const entry of monthEntries) {
+      const entryPath = join(yearPath, entry)
+      const entryStat = await stat(entryPath)
+      if (entryStat.isDirectory()) {
+        monthDirs.push(entry)
+      }
+    }
+
+    // Assert exactly 12 month directories
+    assert.truthy(monthDirs.length === 12, `Year ${year} must contain exactly 12 month directories, found ${monthDirs.length}`)
+
+    // Assert all expected month names are present
+    const monthNames = monthDirs.sort()
+    const expectedMonthNames = [...MONTH_NAMES].sort()
+
+    assert.truthy(
+      monthNames.length === expectedMonthNames.length
+      && monthNames.every((name, index) => name === expectedMonthNames[index]),
+      `Year ${year} must contain all expected month directories. Found: ${monthNames.join(', ')}`,
+    )
+  }
+}
+
+/**
  * Main entry point
  */
 async function main(): Promise<void> {
@@ -305,6 +361,12 @@ async function main(): Promise<void> {
   }
 
   console.log(`📂 Organizing files recursively in: ${resolvedDir}`)
+  console.log('')
+
+  // Assert directory structure integrity before making changes
+  console.log('🔍 Validating directory structure...')
+  await assertYearDirectoriesComplete(resolvedDir)
+  console.log('✅ Directory structure validation complete')
   console.log('')
 
   const results = await organizeFiles(resolvedDir)
