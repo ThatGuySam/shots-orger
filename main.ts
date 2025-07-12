@@ -12,6 +12,7 @@ import { z } from 'zod'
  * Organizes files according to the pattern:
  * - 2020-2023: _YEAR/MM MonthName/
  * - 2024+: MM MonthName/
+ * Based on file creation date, not filename parsing
  */
 
 // Zod schemas for validation and type safety
@@ -56,47 +57,14 @@ const MONTH_NAMES = [
 type ParsedDate = z.infer<typeof ParsedDateSchema>
 
 /**
- * Parse date from various filename patterns
+ * Get date from file creation time
  */
-function parseFileDate(rawFilename: string): ParsedDate | null {
-  // Validate filename using Zod (for type safety and assertions)
-  const filename: Filename = FilenameSchema.parse(rawFilename)
+function getFileDateFromCreationTime(fileStat: import('fs').Stats): ParsedDate {
+  const creationDate = fileStat.birthtime || fileStat.mtime
+  const year = creationDate.getFullYear()
+  const month = creationDate.getMonth() + 1 // JS months are 0-based
+  const day = creationDate.getDate()
 
-  // Pattern 1: Screenshot 2025-MM-DD at H.MM.SS AM.png
-  // Pattern 2: Screen Recording 2025-MM-DD at H.MM.SS AM.mov
-  const standardPattern = /(?:Screenshot|Screen Recording) (\d{4})-(\d{2})-(\d{2}) at/
-
-  // Pattern 3: 2025-MM-DD_HH-MM-SS.mov
-  const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})_/
-
-  // Pattern 4: Simulator Screenshot - Device - 2025-MM-DD at HH.MM.SS.png
-  const simulatorPattern = /Simulator Screenshot.*?(\d{4})-(\d{2})-(\d{2}) at/
-
-  /** Matching filename pattern */
-  const match = filename.match(standardPattern)
-    || filename.match(timestampPattern)
-    || filename.match(simulatorPattern)
-
-  if (!match) {
-    return null
-  }
-
-  // Assert positive space - match found should have required groups
-  assert.nonEmptyArray(match, 'match should be an array')
-  assert.inRange(match.length, [4, Infinity], 'match should have at least 4 groups')
-
-  const [, yearStr, monthStr, dayStr] = match
-
-  // Assert extracted strings are valid
-  assert.nonEmptyString(yearStr, 'year string cannot be empty')
-  assert.nonEmptyString(monthStr, 'month string cannot be empty')
-  assert.nonEmptyString(dayStr, 'day string cannot be empty')
-
-  const year: number = Number.parseInt(yearStr, 10)
-  const month: number = Number.parseInt(monthStr, 10)
-  const day: number = Number.parseInt(dayStr, 10)
-
-  // Use Zod to validate and return typed result
   return ParsedDateSchema.parse({ year, month, day })
 }
 
@@ -131,9 +99,9 @@ function getTargetPath(baseDir: string, date: ParsedDate): string {
 /**
  * Check if file should be organized (is a screenshot/recording)
  */
-function shouldOrganizeFile(rawFilename: string): boolean {
+function shouldOrganizeFile(filename: string): boolean {
   // Validate filename using Zod
-  const validatedFilename: Filename = FilenameSchema.parse(rawFilename)
+  const validatedFilename: Filename = FilenameSchema.parse(filename)
 
   const lowerName = validatedFilename.toLowerCase()
 
@@ -148,9 +116,22 @@ function shouldOrganizeFile(rawFilename: string): boolean {
   // Timestamp pattern files
   const hasTimestampPattern = /^\d{4}-\d{2}-\d{2}_/.test(validatedFilename)
 
-  const result = (isScreenCapture && hasMediaExtension) || hasTimestampPattern
+  return (isScreenCapture && hasMediaExtension) || hasTimestampPattern
+}
 
-  return result
+/**
+ * Check if file is already in an organized directory
+ */
+function isFileInOrganizedDirectory(filePath: string, rootDir: string): boolean {
+  const relativePath = filePath.replace(rootDir, '').replace(/^\//, '')
+
+  // Check if file is in a year directory pattern (_YYYY/MM MonthName/)
+  const yearDirPattern = /^_\d{4}\/\d{2} \w+\//
+
+  // Check if file is in a month directory at root (MM MonthName/)
+  const monthDirPattern = /^\d{2} \w+\//
+
+  return yearDirPattern.test(relativePath) || monthDirPattern.test(relativePath)
 }
 
 /**
@@ -172,163 +153,91 @@ async function ensureDir(dirPath: string): Promise<void> {
 }
 
 /**
- * Organize files recursively - returns counts for aggregation
+ * Recursively find all files in directory and subdirectories
  */
-async function organizeFiles(targetDir: string, rootDir?: string): Promise<{ processed: number, skipped: number }> {
-  // Validate target directory using Zod
-  const validatedTargetDir: DirPath = DirectoryPathSchema.parse(targetDir)
+async function findAllFiles(dirPath: string, allFiles: string[] = []): Promise<string[]> {
+  const entries = await readdir(dirPath)
 
-  const resolvedDir = resolve(validatedTargetDir)
-  const actualRootDir = rootDir || resolvedDir
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry)
+    const entryStat = await stat(fullPath)
 
-  try {
-    const files = await readdir(resolvedDir)
+    if (entryStat.isDirectory()) {
+      await findAllFiles(fullPath, allFiles)
+    }
+    else {
+      allFiles.push(fullPath)
+    }
+  }
 
-    // Assert directory reading result
-    assert.array(files, undefined, 'files must be an array')
+  return allFiles
+}
 
-    let totalProcessedCount = 0
-    let totalSkippedCount = 0
+/**
+ * Organize files based on creation date
+ */
+async function organizeFiles(rootDir: string): Promise<{ processed: number, skipped: number }> {
+  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
 
-    for (const filename of files) {
-      // Validate filename using Zod
-      const validatedFilename = FilenameSchema.parse(filename)
+  // Find all files recursively
+  console.log('🔍 Finding all files...')
+  const allFiles = await findAllFiles(validatedRootDir)
+  console.log(`📊 Found ${allFiles.length} total files`)
 
-      const fullPath = join(resolvedDir, validatedFilename)
-      const fileStat = await stat(fullPath)
+  let processed = 0
+  let skipped = 0
 
-      // Assert file stat result - Stats object has the methods we need
-      assert.truthy(fileStat, 'fileStat must exist')
-      assert.function(fileStat.isDirectory, 'fileStat.isDirectory must be a function')
-      assert.function(fileStat.isFile, 'fileStat.isFile must be a function')
+  for (const filePath of allFiles) {
+    const filename = dirname(filePath) !== validatedRootDir
+      ? filePath.split('/').pop() || ''
+      : filePath.split('/').pop() || ''
 
-      // Handle directories recursively
-      if (fileStat.isDirectory()) {
-        console.log(`📂 Recursively processing directory: ${fullPath.replace(`${actualRootDir}/`, '')}`)
+    // Skip if not a file we want to organize
+    if (!shouldOrganizeFile(filename)) {
+      skipped++
+      continue
+    }
 
-        // Recursively process subdirectory
-        const subResults = await organizeFiles(fullPath, actualRootDir)
+    // Skip if already in organized directory
+    if (isFileInOrganizedDirectory(filePath, validatedRootDir)) {
+      skipped++
+      continue
+    }
 
-        // Validate recursive results using Zod
-        const validatedSubResults = OrganizeResultsSchema.parse(subResults)
+    try {
+      const fileStat = await stat(filePath)
+      const fileDate = getFileDateFromCreationTime(fileStat)
+      const targetPath = getTargetPath(validatedRootDir, fileDate)
+      const targetFile = join(targetPath, filename)
 
-        // Accumulate counts from recursive processing
-        totalProcessedCount += validatedSubResults.processed
-        totalSkippedCount += validatedSubResults.skipped
-        continue
-      }
-
-      // Skip files that shouldn't be organized
-      if (!shouldOrganizeFile(validatedFilename)) {
-        totalSkippedCount++
-        continue
-      }
-
-      // Parse date from filename
-      const date = parseFileDate(validatedFilename)
-      if (!date) {
-        console.log(`⚠️  Could not parse date from: ${validatedFilename}`)
-        totalSkippedCount++
-        continue
-      }
-
-      // Get target directory (relative to root, not current subdirectory)
-      const targetPath = getTargetPath(actualRootDir, date)
-      const targetFile = join(targetPath, validatedFilename)
-
-      // Skip if file is already in the right place
-      if (dirname(fullPath) === targetPath) {
-        totalSkippedCount++
+      // Skip if already in target location
+      if (dirname(filePath) === targetPath) {
+        skipped++
         continue
       }
 
       // Ensure target directory exists
       await ensureDir(targetPath)
 
-      // Check if target file already exists to avoid overwriting
+      // Check if target file already exists
       if (existsSync(targetFile)) {
-        console.log(`⚠️  Skipped ${validatedFilename}: target already exists at ${targetPath.replace(`${actualRootDir}/`, '')}`)
-        totalSkippedCount++
+        console.log(`⚠️  Skipped ${filename}: target already exists`)
+        skipped++
         continue
       }
 
       // Move file
-      try {
-        await rename(fullPath, targetFile)
-        console.log(`📁 ${validatedFilename} → ${targetPath.replace(`${actualRootDir}/`, '')}`)
-        totalProcessedCount++
-      }
-      catch (error) {
-        console.error(`❌ Failed to move ${validatedFilename}:`, error)
-        totalSkippedCount++
-      }
+      await rename(filePath, targetFile)
+      console.log(`📁 ${filename} (${fileDate.year}-${fileDate.month.toString().padStart(2, '0')}) → ${targetPath.replace(`${validatedRootDir}/`, '')}`)
+      processed++
     }
-
-    const result = { processed: totalProcessedCount, skipped: totalSkippedCount }
-
-    // Validate and return results using Zod for type safety
-    return OrganizeResultsSchema.parse(result)
-  }
-  catch (error) {
-    console.error('❌ Error reading directory:', error)
-    process.exit(1)
-  }
-}
-
-/**
- * Assert that all year directories (not current year) contain 12 month directories
- */
-async function assertYearDirectoriesComplete(rootDir: string): Promise<void> {
-  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
-  const currentYear = new Date().getFullYear()
-  const entries = await readdir(validatedRootDir)
-
-  // Find year directories (pattern: _YYYY)
-  const yearDirs = []
-  for (const entry of entries) {
-    if (/^_\d{4}$/.test(entry)) {
-      const entryPath = join(validatedRootDir, entry)
-      const entryStat = await stat(entryPath)
-      if (entryStat.isDirectory()) {
-        yearDirs.push(entry)
-      }
+    catch (error) {
+      console.error(`❌ Failed to process ${filename}:`, error)
+      skipped++
     }
   }
 
-  for (const yearDir of yearDirs) {
-    const year = Number.parseInt(yearDir.substring(1), 10)
-
-    // Skip current year (might be incomplete)
-    if (year === currentYear) {
-      continue
-    }
-
-    const yearPath = join(validatedRootDir, yearDir)
-    const monthEntries = await readdir(yearPath)
-
-    // Filter to only directories
-    const monthDirs = []
-    for (const entry of monthEntries) {
-      const entryPath = join(yearPath, entry)
-      const entryStat = await stat(entryPath)
-      if (entryStat.isDirectory()) {
-        monthDirs.push(entry)
-      }
-    }
-
-    // Assert exactly 12 month directories
-    assert.truthy(monthDirs.length === 12, `Year ${year} must contain exactly 12 month directories, found ${monthDirs.length}`)
-
-    // Assert all expected month names are present
-    const monthNames = monthDirs.sort()
-    const expectedMonthNames = [...MONTH_NAMES].sort()
-
-    assert.truthy(
-      monthNames.length === expectedMonthNames.length
-      && monthNames.every((name, index) => name === expectedMonthNames[index]),
-      `Year ${year} must contain all expected month directories. Found: ${monthNames.join(', ')}`,
-    )
-  }
+  return OrganizeResultsSchema.parse({ processed, skipped })
 }
 
 /**
@@ -346,6 +255,7 @@ async function main(): Promise<void> {
     console.error('📖 This script organizes screenshot and recording files into:')
     console.error('   • 2020-2023: _YEAR/MM MonthName/')
     console.error('   • 2024+: MM MonthName/')
+    console.error('   • Based on file creation date')
     process.exit(1)
   }
 
@@ -360,26 +270,17 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  console.log(`📂 Organizing files recursively in: ${resolvedDir}`)
-  console.log('')
-
-  // Assert directory structure integrity before making changes
-  console.log('🔍 Validating directory structure...')
-  await assertYearDirectoriesComplete(resolvedDir)
-  console.log('✅ Directory structure validation complete')
+  console.log(`📂 Organizing files in: ${resolvedDir}`)
   console.log('')
 
   const results = await organizeFiles(resolvedDir)
 
-  // Validate results using Zod
-  const validatedResults = OrganizeResultsSchema.parse(results)
-
   // Display final summary
-  console.log(`\n✅ Recursive organization complete!`)
-  console.log(`📁 Total processed: ${validatedResults.processed} files`)
-  console.log(`⏭️  Total skipped: ${validatedResults.skipped} files`)
+  console.log(`\n✅ Organization complete!`)
+  console.log(`📁 Total processed: ${results.processed} files`)
+  console.log(`⏭️  Total skipped: ${results.skipped} files`)
 
-  const totalFiles = validatedResults.processed + validatedResults.skipped
+  const totalFiles = results.processed + results.skipped
   console.log(`📊 Total files examined: ${totalFiles}`)
 }
 
