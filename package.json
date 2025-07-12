@@ -30,6 +30,7 @@
     "dev": "unbuild --stub",
     "lint": "eslint",
     "organize": "bun main.ts",
+    "install-global": "sudo ln -sf \"$(pwd)/main.ts\" /usr/local/bin/shots",
     "prepublishOnly": "nr build",
     "release": "bumpp && pnpm publish",
     "start": "tsx src/index.ts",
