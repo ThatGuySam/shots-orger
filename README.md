@@ -1,34 +1,87 @@
-# pkg-placeholder
+# shots-orger
 
-[![npm version][npm-version-src]][npm-version-href]
-[![npm downloads][npm-downloads-src]][npm-downloads-href]
-[![bundle][bundle-src]][bundle-href]
-[![JSDocs][jsdocs-src]][jsdocs-href]
-[![License][license-src]][license-href]
+Screenshot and screen recording file organizer that automatically sorts files into year/month folders.
 
-_description_
+## Usage
 
-## Sponsors
+```bash
+bun main.ts ./path/to/directory
+```
 
-<p align="center">
-  <a href="https://cdn.jsdelivr.net/gh/antfu/static/sponsors.svg">
-    <img src='https://cdn.jsdelivr.net/gh/antfu/static/sponsors.svg'/>
-  </a>
-</p>
+## Organization Pattern
 
-## License
+The script organizes files based on dates extracted from filenames:
 
-[MIT](./LICENSE) License © [Anthony Fu](https://github.com/antfu)
+### Archived Years (2020-2023)
+Files are organized into `_YEAR/MM MonthName/` folders:
+```
+_2020/
+  ├── 01 Jan/
+  ├── 02 Feb/
+  ├── 03 March/
+  └── ...
+_2021/
+_2022/
+_2023/
+```
 
-<!-- Badges -->
+### Current Years (2024+)
+Files are organized into `MM MonthName/` folders at the root level:
+```
+01 Jan/
+02 Feb/
+03 Mar/
+04 Apr/
+05 May/
+06 Jun/
+```
 
-[npm-version-src]: https://img.shields.io/npm/v/pkg-placeholder?style=flat&colorA=080f12&colorB=1fa669
-[npm-version-href]: https://npmjs.com/package/pkg-placeholder
-[npm-downloads-src]: https://img.shields.io/npm/dm/pkg-placeholder?style=flat&colorA=080f12&colorB=1fa669
-[npm-downloads-href]: https://npmjs.com/package/pkg-placeholder
-[bundle-src]: https://img.shields.io/bundlephobia/minzip/pkg-placeholder?style=flat&colorA=080f12&colorB=1fa669&label=minzip
-[bundle-href]: https://bundlephobia.com/result?p=pkg-placeholder
-[license-src]: https://img.shields.io/github/license/antfu/pkg-placeholder.svg?style=flat&colorA=080f12&colorB=1fa669
-[license-href]: https://github.com/antfu/pkg-placeholder/blob/main/LICENSE
-[jsdocs-src]: https://img.shields.io/badge/jsdocs-reference-080f12?style=flat&colorA=080f12&colorB=1fa669
-[jsdocs-href]: https://www.jsdocs.io/package/pkg-placeholder
+## Supported File Patterns
+
+The script recognizes and organizes these filename patterns:
+
+- `Screenshot 2025-MM-DD at H.MM.SS AM.png`
+- `Screen Recording 2025-MM-DD at H.MM.SS AM.mov`
+- `2025-MM-DD_HH-MM-SS.mov`
+- `Simulator Screenshot - iPhone 15 - 2025-MM-DD at HH.MM.SS.png`
+
+## Features
+
+- ✅ Automatically creates directory structure
+- ✅ Skips files already in correct locations
+- ✅ Provides detailed progress output
+- ✅ Handles various filename patterns
+- ✅ Safe operation (moves files, doesn't copy)
+
+## Example Output
+
+```
+📂 Organizing files in: /Users/user/Screenshots
+
+📁 Created directory: /Users/user/Screenshots/01 Jan
+📁 Screenshot 2025-01-15 at 3.45.12 PM.png → 01 Jan
+📁 Screen Recording 2025-01-20 at 2.30.45 PM.mov → 01 Jan
+
+✅ Organization complete!
+📁 Processed: 25 files
+⏭️  Skipped: 3 files
+```
+
+## Development
+
+```bash
+# Install dependencies
+pnpm install
+
+# Run the organizer
+bun main.ts ./path/to/directory
+
+# Development mode
+pnpm dev
+
+# Type checking
+pnpm typecheck
+
+# Linting
+pnpm lint
+```
