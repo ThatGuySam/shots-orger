@@ -39,7 +39,9 @@
     "prepare": "simple-git-hooks"
   },
   "dependencies": {
-    "@sindresorhus/is": "catalog:"
+    "@sindresorhus/is": "catalog:",
+    "type-fest": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@antfu/eslint-config": "catalog:cli",

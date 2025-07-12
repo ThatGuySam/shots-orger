@@ -6,6 +6,8 @@ packages:
 catalog:
   '@sindresorhus/is': ^7.0.2
   eslint-plugin-format: ^1.0.1
+  type-fest: ^4.41.0
+  zod: ^4.0.5
 catalogs:
   cli:
     '@antfu/eslint-config': ^4.10.1
