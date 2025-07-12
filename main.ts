@@ -16,8 +16,6 @@ import { z } from 'zod'
  */
 
 // Zod schemas for validation and type safety
-const FilenameSchema = z.string().min(1, 'filename cannot be empty').brand('Filename')
-type Filename = z.infer<typeof FilenameSchema>
 
 const ParsedDateSchema = z.object({
   year: z.number().int().min(2020),
@@ -100,23 +98,16 @@ function getTargetPath(baseDir: string, date: ParsedDate): string {
  * Check if file should be organized (is a screenshot/recording)
  */
 function shouldOrganizeFile(filename: string): boolean {
-  // Validate filename using Zod
-  const validatedFilename: Filename = FilenameSchema.parse(filename)
+  const fileExts = [
+    'png',
+    'jpg',
+    'jpeg',
+    'mov',
+    'mp4',
+    'gif',
+  ]
 
-  const lowerName = validatedFilename.toLowerCase()
-
-  // Screenshot and screen recording files
-  const isScreenCapture = lowerName.includes('screenshot')
-    || lowerName.includes('screen recording')
-    || lowerName.includes('simulator screenshot')
-
-  // Common media extensions
-  const hasMediaExtension = /\.(?:png|jpg|jpeg|mov|mp4|gif)$/i.test(validatedFilename)
-
-  // Timestamp pattern files
-  const hasTimestampPattern = /^\d{4}-\d{2}-\d{2}_/.test(validatedFilename)
-
-  return (isScreenCapture && hasMediaExtension) || hasTimestampPattern
+  return fileExts.some(ext => filename.toLowerCase().endsWith(ext))
 }
 
 /**
