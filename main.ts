@@ -159,6 +159,13 @@ async function organizeFiles(targetDir: string): Promise<void> {
       // Ensure target directory exists
       await ensureDir(targetPath)
 
+      // Check if target file already exists to avoid overwriting
+      if (existsSync(targetFile)) {
+        console.log(`⚠️  Skipped ${filename}: target already exists at ${targetPath.replace(`${resolvedDir}/`, '')}`)
+        skippedCount++
+        continue
+      }
+
       // Move file
       try {
         await rename(fullPath, targetFile)
@@ -167,6 +174,7 @@ async function organizeFiles(targetDir: string): Promise<void> {
       }
       catch (error) {
         console.error(`❌ Failed to move ${filename}:`, error)
+        skippedCount++
       }
     }
 
