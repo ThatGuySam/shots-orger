@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "packageManager": "pnpm@10.6.2",
   "description": "Screenshot and screen recording file organizer",
-  "author": "Anthony Fu <anthonyfu117@hotmail.com>",
+  "author": "Sam Carlton",
   "license": "MIT",
   "funding": "https://github.com/sponsors/antfu",
   "homepage": "https://github.com/antfu/pkg-placeholder#readme",
