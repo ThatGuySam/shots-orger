@@ -3,6 +3,9 @@ packages:
   - docs
   - packages/*
   - examples/*
+catalog:
+  '@sindresorhus/is': ^7.0.2
+  eslint-plugin-format: ^1.0.1
 catalogs:
   cli:
     '@antfu/eslint-config': ^4.10.1
