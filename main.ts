@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, rename, stat } from 'node:fs/promises'
+import { mkdir, readdir, rename, rmdir, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { assert } from '@sindresorhus/is'
@@ -241,6 +241,170 @@ async function organizeFiles(rootDir: string): Promise<{ processed: number, skip
 }
 
 /**
+ * Find unorganized directories in a year directory
+ */
+async function findUnorganizedDirectories(yearPath: string): Promise<string[]> {
+  const entries = await readdir(yearPath)
+  const unorganizedDirs: string[] = []
+
+  for (const entry of entries) {
+    const entryPath = join(yearPath, entry)
+    const entryStat = await stat(entryPath)
+
+    if (entryStat.isDirectory()) {
+      // Check if this directory name is in our expected MONTH_NAMES
+      const isExpectedMonth = MONTH_NAMES.includes(entry)
+
+      if (!isExpectedMonth) {
+        unorganizedDirs.push(entry)
+      }
+    }
+  }
+
+  return unorganizedDirs
+}
+
+/**
+ * Assert year directory structure before making changes
+ */
+async function assertYearDirectoryStructure(rootDir: string): Promise<void> {
+  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
+  const entries = await readdir(validatedRootDir)
+
+  // Find year directories (pattern: _YYYY)
+  const yearDirs = []
+  for (const entry of entries) {
+    if (/^_\d{4}$/.test(entry)) {
+      const entryPath = join(validatedRootDir, entry)
+      const entryStat = await stat(entryPath)
+      if (entryStat.isDirectory()) {
+        yearDirs.push(entry)
+      }
+    }
+  }
+
+  console.log(`📊 Found ${yearDirs.length} year directories to validate`)
+
+  for (const yearDir of yearDirs) {
+    const year = Number.parseInt(yearDir.substring(1), 10)
+    const yearPath = join(validatedRootDir, yearDir)
+
+    console.log(`🔍 Validating ${yearDir}...`)
+
+    // Find unorganized directories
+    const unorganizedDirs = await findUnorganizedDirectories(yearPath)
+
+    if (unorganizedDirs.length > 0) {
+      console.log(`⚠️  Found ${unorganizedDirs.length} unorganized directories in ${yearDir}:`)
+      for (const dir of unorganizedDirs) {
+        console.log(`   - ${dir}`)
+      }
+    }
+
+    // Find organized directories
+    const monthEntries = await readdir(yearPath)
+    const organizedDirs = []
+    for (const entry of monthEntries) {
+      const entryPath = join(yearPath, entry)
+      const entryStat = await stat(entryPath)
+      if (entryStat.isDirectory() && MONTH_NAMES.includes(entry)) {
+        organizedDirs.push(entry)
+      }
+    }
+
+    console.log(`✅ ${yearDir} has ${organizedDirs.length} properly organized directories`)
+    console.log(`⚠️  ${yearDir} has ${unorganizedDirs.length} unorganized directories`)
+
+    // Assert that we have some structure to work with
+    const totalDirs = organizedDirs.length + unorganizedDirs.length
+    assert.truthy(totalDirs > 0, `Year ${year} must contain at least one directory`)
+
+    // Assert no more than 12 directories per month type
+    assert.truthy(totalDirs <= 24, `Year ${year} has too many directories (${totalDirs}), expected max 24 (12 organized + 12 unorganized)`)
+  }
+}
+
+/**
+ * Consolidate files from unorganized directories into proper month directories
+ */
+async function consolidateUnorganizedDirectories(rootDir: string): Promise<{ consolidated: number, errors: number }> {
+  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
+  const entries = await readdir(validatedRootDir)
+
+  let totalConsolidated = 0
+  let totalErrors = 0
+
+  // Process each year directory
+  for (const entry of entries) {
+    if (/^_\d{4}$/.test(entry)) {
+      const yearPath = join(validatedRootDir, entry)
+      const yearStat = await stat(yearPath)
+
+      if (yearStat.isDirectory()) {
+        console.log(`🔧 Consolidating unorganized directories in ${entry}...`)
+
+        const unorganizedDirs = await findUnorganizedDirectories(yearPath)
+
+        for (const unorganizedDir of unorganizedDirs) {
+          const unorganizedPath = join(yearPath, unorganizedDir)
+
+          try {
+            // Get all files in the unorganized directory
+            const files = await readdir(unorganizedPath)
+
+            for (const filename of files) {
+              const filePath = join(unorganizedPath, filename)
+              const fileStat = await stat(filePath)
+
+              if (fileStat.isFile() && shouldOrganizeFile(filename)) {
+                // Get file creation date to determine correct month
+                const fileDate = getFileDateFromCreationTime(fileStat)
+                const expectedMonthName = MONTH_NAMES[fileDate.month - 1]
+                const targetDir = join(yearPath, expectedMonthName)
+                const targetFile = join(targetDir, filename)
+
+                // Ensure target directory exists
+                await ensureDir(targetDir)
+
+                // Check if target file already exists
+                if (existsSync(targetFile)) {
+                  console.log(`⚠️  Skipped ${filename}: already exists in ${expectedMonthName}`)
+                  continue
+                }
+
+                // Move file to correct directory
+                await rename(filePath, targetFile)
+                console.log(`📁 ${filename} (${fileDate.year}-${fileDate.month.toString().padStart(2, '0')}) → ${expectedMonthName}`)
+                totalConsolidated++
+              }
+            }
+
+            // Check if unorganized directory is now empty
+            const remainingFiles = await readdir(unorganizedPath)
+            if (remainingFiles.length === 0) {
+              // Remove empty directory
+              await rmdir(unorganizedPath)
+              console.log(`🗑️  Removed empty directory: ${unorganizedDir}`)
+
+              continue
+            }
+
+            // If there's anything left, we need to fix that before continuing
+            throw new Error(`Directory ${unorganizedDir} is not empty`)
+          }
+          catch (error) {
+            console.error(`❌ Error consolidating ${unorganizedDir}:`, error)
+            totalErrors++
+          }
+        }
+      }
+    }
+  }
+
+  return { consolidated: totalConsolidated, errors: totalErrors }
+}
+
+/**
  * Main entry point
  */
 async function main(): Promise<void> {
@@ -273,15 +437,31 @@ async function main(): Promise<void> {
   console.log(`📂 Organizing files in: ${resolvedDir}`)
   console.log('')
 
+  // Assert directory structure before making changes
+  console.log('🔍 Validating directory structure...')
+  await assertYearDirectoryStructure(resolvedDir)
+  console.log('')
+
+  // Consolidate unorganized directories first
+  console.log('🔧 Consolidating unorganized directories...')
+  const consolidationResults = await consolidateUnorganizedDirectories(resolvedDir)
+  console.log(`✅ Consolidated ${consolidationResults.consolidated} files`)
+  if (consolidationResults.errors > 0) {
+    console.log(`⚠️  ${consolidationResults.errors} errors during consolidation`)
+  }
+  console.log('')
+
+  // Then organize any remaining loose files
   const results = await organizeFiles(resolvedDir)
 
   // Display final summary
   console.log(`\n✅ Organization complete!`)
-  console.log(`📁 Total processed: ${results.processed} files`)
-  console.log(`⏭️  Total skipped: ${results.skipped} files`)
+  console.log(`📁 Files consolidated: ${consolidationResults.consolidated}`)
+  console.log(`📁 Files organized: ${results.processed}`)
+  console.log(`⏭️  Files skipped: ${results.skipped}`)
 
-  const totalFiles = results.processed + results.skipped
-  console.log(`📊 Total files examined: ${totalFiles}`)
+  const totalFilesProcessed = consolidationResults.consolidated + results.processed + results.skipped
+  console.log(`📊 Total files examined: ${totalFilesProcessed}`)
 }
 
 // Run if called directly
