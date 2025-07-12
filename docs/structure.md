@@ -16,7 +16,7 @@ _2022/
 _2023/
 ```
 - Years prefixed with underscores (`_2020`, `_2021`, etc.)
-- Monthly subfolders within each year
+- Monthly sub-folders within each year
 - Month names spelled out ("01 Jan", "02 Feb", "03 March", etc.)
 
 ### 2. **Current Year (2024): Monthly Folders at Root Level**
