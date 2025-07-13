@@ -149,6 +149,7 @@ function shouldOrganizeFile(filename: string): boolean {
     'mov',
     'mp4',
     'gif',
+    'mp3',
   ]
 
   return fileExts.some(ext => filename.toLowerCase().endsWith(ext))
