@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 
+import type { Dirent, Stats as FsStats } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, rename, rmdir, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { assert } from '@sindresorhus/is'
 import { z } from 'zod'
+
+const MAX_OPS = 5000
 
 /**
  * Screenshot/Recording file organizer
@@ -29,11 +32,6 @@ type NonEmptyString = z.infer<typeof NonEmptyStringSchema>
 const DirectoryPathSchema = NonEmptyStringSchema.min(1, 'directory path cannot be empty').brand('DirPath')
 type DirPath = z.infer<typeof DirectoryPathSchema>
 
-const OrganizeResultsSchema = z.object({
-  processed: z.number().int().nonnegative(),
-  skipped: z.number().int().nonnegative(),
-})
-
 const ProcessArgvSchema = z.array(z.string()).min(2, 'process.argv must have at least 2 elements')
 
 // Month names mapping to match existing structure
@@ -54,10 +52,47 @@ const MONTH_NAMES = [
 
 type ParsedDate = z.infer<typeof ParsedDateSchema>
 
+// Validate process.argv using Zod
+const validatedArgv = ProcessArgvSchema.parse(process.argv)
+const targetDir = validatedArgv[2]
+// Validate target directory using Zod
+const validatedTargetDir: DirPath = DirectoryPathSchema.parse(targetDir)
+const rootDir: DirPath = DirectoryPathSchema.parse(resolve(validatedTargetDir))
+
+/**
+ * String path that is guaranteed to be in the root directory
+ */
+const RootDirPathSchema = DirectoryPathSchema.startsWith(rootDir).brand('RootDirPath')
+type RootDirPath = z.infer<typeof RootDirPathSchema>
+
+const DestDirPathSchema = RootDirPathSchema
+  // Has file extension
+  .refine((path) => {
+    const relativePath = path.replace(rootDir, '').replace(/^\//, '')
+    const parts = relativePath.split('/')
+
+    return parts[parts.length - 1].includes('.')
+  }, 'DestDirPath must have a file extension')
+  .refine((path) => {
+    const relativePath = path.replace(rootDir, '').replace(/^\//, '')
+    const parts = relativePath.split('/')
+
+    // Has 2 or 3 parts after rootDir and the first part is a year
+    return (
+      parts.length === 2
+      || (
+        parts.length === 3
+        && parts[0].startsWith('_')
+      )
+    )
+  }, 'DestDirPath must be in the root directory and have 2 or 3 parts')
+  .brand('DestDirPath')
+type DestDirPath = z.infer<typeof DestDirPathSchema>
+
 /**
  * Get date from file creation time
  */
-function getFileDateFromCreationTime(fileStat: import('fs').Stats): ParsedDate {
+function getFileDateFromCreationTime(fileStat: FsStats): ParsedDate {
   const creationDate = fileStat.birthtime || fileStat.mtime
   const year = creationDate.getFullYear()
   const month = creationDate.getMonth() + 1 // JS months are 0-based
@@ -69,29 +104,37 @@ function getFileDateFromCreationTime(fileStat: import('fs').Stats): ParsedDate {
 /**
  * Get target directory path for a file based on its date
  */
-function getTargetPath(baseDir: string, date: ParsedDate): string {
+function getTargetPath(file: FileInfo): DestDirPath {
+  const date = getFileDateFromCreationTime(file.stat)
+
   // Validate arguments using Zod
-  const validatedBaseDir: DirPath = DirectoryPathSchema.parse(baseDir)
   const validatedDate = ParsedDateSchema.parse(date)
 
-  const monthName: NonEmptyString = NonEmptyStringSchema
+  const yearDirName = `_${validatedDate.year}`
+  const monthDirName: NonEmptyString = NonEmptyStringSchema
     .parse(MONTH_NAMES[validatedDate.month - 1])
 
-  let result: string
+  const pathParts: string[] = [
+    monthDirName,
+  ]
 
-  // Files from 2020-2023 go into _YEAR folders
-  if (validatedDate.year >= 2020 && validatedDate.year <= 2023) {
-    result = join(validatedBaseDir, `_${validatedDate.year}`, monthName)
+  const isBeforeCurrentYear = validatedDate.year < new Date().getFullYear()
+
+  // If the year is before the current year, then we put it in the year directory
+  if (isBeforeCurrentYear) {
+    pathParts.unshift(yearDirName)
   }
-  else {
-    // Current years (2024+) go into month folders at root
-    result = join(validatedBaseDir, monthName)
-  }
 
-  // Assert postcondition - return value contains expected parts
-  assert.truthy(result.includes(monthName), 'result must contain month name')
+  const path = DestDirPathSchema.parse(
+    join(
+      rootDir,
+      yearDirName,
+      monthDirName,
+      file.dirent.name,
+    ),
+  )
 
-  return result
+  return path
 }
 
 /**
@@ -111,21 +154,6 @@ function shouldOrganizeFile(filename: string): boolean {
 }
 
 /**
- * Check if file is already in an organized directory
- */
-function isFileInOrganizedDirectory(filePath: string, rootDir: string): boolean {
-  const relativePath = filePath.replace(rootDir, '').replace(/^\//, '')
-
-  // Check if file is in a year directory pattern (_YYYY/MM MonthName/)
-  const yearDirPattern = /^_\d{4}\/\d{2} \w+\//
-
-  // Check if file is in a month directory at root (MM MonthName/)
-  const monthDirPattern = /^\d{2} \w+\//
-
-  return yearDirPattern.test(relativePath) || monthDirPattern.test(relativePath)
-}
-
-/**
  * Ensure directory exists, create if it doesn't
  */
 async function ensureDir(dirPath: string): Promise<void> {
@@ -141,94 +169,6 @@ async function ensureDir(dirPath: string): Promise<void> {
     // Assert postcondition - directory should exist after creation
     assert.truthy(existsSync(validatedDirPath), 'Directory must exist after creation')
   }
-}
-
-/**
- * Recursively find all files in directory and subdirectories
- */
-async function findAllFiles(dirPath: string, allFiles: string[] = []): Promise<string[]> {
-  const entries = await readdir(dirPath)
-
-  for (const entry of entries) {
-    const fullPath = join(dirPath, entry)
-    const entryStat = await stat(fullPath)
-
-    if (entryStat.isDirectory()) {
-      await findAllFiles(fullPath, allFiles)
-    }
-    else {
-      allFiles.push(fullPath)
-    }
-  }
-
-  return allFiles
-}
-
-/**
- * Organize files based on creation date
- */
-async function organizeFiles(rootDir: string): Promise<{ processed: number, skipped: number }> {
-  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
-
-  // Find all files recursively
-  console.log('🔍 Finding all files...')
-  const allFiles = await findAllFiles(validatedRootDir)
-  console.log(`📊 Found ${allFiles.length} total files`)
-
-  let processed = 0
-  let skipped = 0
-
-  for (const filePath of allFiles) {
-    const filename = dirname(filePath) !== validatedRootDir
-      ? filePath.split('/').pop() || ''
-      : filePath.split('/').pop() || ''
-
-    // Skip if not a file we want to organize
-    if (!shouldOrganizeFile(filename)) {
-      skipped++
-      continue
-    }
-
-    // Skip if already in organized directory
-    if (isFileInOrganizedDirectory(filePath, validatedRootDir)) {
-      skipped++
-      continue
-    }
-
-    try {
-      const fileStat = await stat(filePath)
-      const fileDate = getFileDateFromCreationTime(fileStat)
-      const targetPath = getTargetPath(validatedRootDir, fileDate)
-      const targetFile = join(targetPath, filename)
-
-      // Skip if already in target location
-      if (dirname(filePath) === targetPath) {
-        skipped++
-        continue
-      }
-
-      // Ensure target directory exists
-      await ensureDir(targetPath)
-
-      // Check if target file already exists
-      if (existsSync(targetFile)) {
-        console.log(`⚠️  Skipped ${filename}: target already exists`)
-        skipped++
-        continue
-      }
-
-      // Move file
-      await rename(filePath, targetFile)
-      console.log(`📁 ${filename} (${fileDate.year}-${fileDate.month.toString().padStart(2, '0')}) → ${targetPath.replace(`${validatedRootDir}/`, '')}`)
-      processed++
-    }
-    catch (error) {
-      console.error(`❌ Failed to process ${filename}:`, error)
-      skipped++
-    }
-  }
-
-  return OrganizeResultsSchema.parse({ processed, skipped })
 }
 
 /**
@@ -315,95 +255,173 @@ async function assertYearDirectoryStructure(rootDir: string): Promise<void> {
   }
 }
 
+interface FileInfo {
+  stat: FsStats
+  dirent: Dirent
+}
+
+/**
+ * Collect file stats for all files in the root directory
+ * so that we can plan operations
+ */
+async function collectFileStats(rootDir: string): Promise<FileInfo[]> {
+  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
+  const entries = await readdir(validatedRootDir, {
+    withFileTypes: true,
+    recursive: true,
+  })
+
+  /**
+   * Get stats for all files and directories in parallel
+   * Can include files and directories
+   */
+  const fileStats: FileInfo[] = await Promise.all(entries.map(async (entry) => {
+    const fullPath = join(entry.parentPath, entry.name)
+    const entryStat = await stat(fullPath)
+
+    return { stat: entryStat, dirent: entry }
+  }))
+
+  return fileStats
+}
+
+interface MoveOp { type: 'move', src: RootDirPath, dest: DestDirPath }
+interface RmdirOp { type: 'rmdir', dir: RootDirPath }
+type Op = MoveOp | RmdirOp
+
+interface PlanResults {
+  plannedOps: Map<DestDirPath, Op>
+  plannedMoves: Map<DestDirPath, MoveOp>
+  plannedRmdirs: Map<DestDirPath, RmdirOp>
+}
+
 /**
  * Consolidate files from unorganized directories into proper month directories
+ * Refactored: collect all operations, assert, then execute
  */
-async function consolidateUnorganizedDirectories(rootDir: string): Promise<{ consolidated: number, errors: number }> {
-  const validatedRootDir: DirPath = DirectoryPathSchema.parse(rootDir)
-  const entries = await readdir(validatedRootDir)
+function planOperations(fileStats: FileInfo[]): PlanResults {
+  const plannedOps: Map<DestDirPath, Op> = new Map()
+  const plannedMoves: Map<DestDirPath, MoveOp> = new Map()
+  const plannedRmdirs: Map<DestDirPath, RmdirOp> = new Map()
 
-  let totalConsolidated = 0
-  let totalErrors = 0
+  const existingFileMap: Map<string, FileInfo> = new Map([
+    ...fileStats
+      .filter(f => f.dirent.isFile())
+      .map((f): [string, FileInfo] => {
+        const filePath = join(f.dirent.parentPath, f.dirent.name)
+        return [
+          filePath,
+          f,
+        ]
+      }),
+  ])
 
-  // Process each year directory
-  for (const entry of entries) {
-    if (/^_\d{4}$/.test(entry)) {
-      const yearPath = join(validatedRootDir, entry)
-      const yearStat = await stat(yearPath)
+  /**
+   * Collect all planned operations
+   */
+  for (const fileStat of fileStats) {
+    // Skip directories
+    if (fileStat.dirent.isDirectory())
+      continue
 
-      if (yearStat.isDirectory()) {
-        console.log(`🔧 Consolidating unorganized directories in ${entry}...`)
+    // Skip files that are not screenshots or recordings
+    if (!shouldOrganizeFile(fileStat.dirent.name))
+      continue
 
-        const unorganizedDirs = await findUnorganizedDirectories(yearPath)
+    // Skip files that already exist in the destination
+    if (existingFileMap.has(fileStat.dirent.name))
+      continue
 
-        for (const unorganizedDir of unorganizedDirs) {
-          const unorganizedPath = join(yearPath, unorganizedDir)
+    const srcPath: RootDirPath = RootDirPathSchema.parse(
+      join(fileStat.dirent.parentPath, fileStat.dirent.name),
+    )
+    const destPath = getTargetPath(fileStat)
 
-          try {
-            // Get all files in the unorganized directory
-            const files = await readdir(unorganizedPath)
+    // Skip files that are already in the destination
+    if (existingFileMap.has(destPath))
+      continue
 
-            for (const filename of files) {
-              const filePath = join(unorganizedPath, filename)
-              const fileStat = await stat(filePath)
+    if (plannedOps.has(destPath)) {
+      console.error('🚨 Duplicate destination planned:', { srcPath, destPath })
+      throw new Error(`Duplicate destination planned: ${destPath}`)
+    }
 
-              if (fileStat.isFile() && shouldOrganizeFile(filename)) {
-                // Get file creation date to determine correct month
-                const fileDate = getFileDateFromCreationTime(fileStat)
-                const expectedMonthName = MONTH_NAMES[fileDate.month - 1]
-                const targetDir = join(yearPath, expectedMonthName)
-                const targetFile = join(targetDir, filename)
+    plannedOps.set(destPath, { type: 'move', src: srcPath, dest: destPath })
+    plannedMoves.set(destPath, { type: 'move', src: srcPath, dest: destPath })
+  }
 
-                // Ensure target directory exists
-                await ensureDir(targetDir)
-
-                // Check if target file already exists
-                if (existsSync(targetFile)) {
-                  console.log(`⚠️  Skipped ${filename}: already exists in ${expectedMonthName}`)
-                  continue
-                }
-
-                // Move file to correct directory
-                await rename(filePath, targetFile)
-                console.log(`📁 ${filename} (${fileDate.year}-${fileDate.month.toString().padStart(2, '0')}) → ${expectedMonthName}`)
-                totalConsolidated++
-              }
-            }
-
-            // Check if unorganized directory is now empty
-            const remainingFiles = await readdir(unorganizedPath)
-            if (remainingFiles.length === 0) {
-              // Remove empty directory
-              await rmdir(unorganizedPath)
-              console.log(`🗑️  Removed empty directory: ${unorganizedDir}`)
-
-              continue
-            }
-
-            // If there's anything left, we need to fix that before continuing
-            throw new Error(`Directory ${unorganizedDir} is not empty`)
-          }
-          catch (error) {
-            console.error(`❌ Error consolidating ${unorganizedDir}:`, error)
-            totalErrors++
-          }
-        }
+  // --- ASSERTIONS ---
+  for (const [destPath, op] of plannedOps) {
+    if (op.type === 'move') {
+      if (existingFileMap.has(op.dest)) {
+        console.error('🚨 Duplicate destination planned:', { srcPath: op.src, destPath })
+        throw new Error(`Duplicate destination planned: ${destPath}`)
       }
     }
   }
 
-  return { consolidated: totalConsolidated, errors: totalErrors }
+  // --- PRINT PLAN ---
+  console.log('Planned operations:')
+
+  const movesSample = Array.from(plannedMoves.values()).slice(0, 5)
+  const rmdirsSample = Array.from(plannedRmdirs.values()).slice(0, 5)
+
+  console.log('Sample Moves:', movesSample.map(m => `${m.src} -> ${m.dest}`))
+  console.log('Sample Rmdirs:', rmdirsSample.map(r => r.dir))
+
+  console.log('---')
+
+  return {
+    plannedOps,
+    plannedMoves,
+    plannedRmdirs,
+  }
+}
+
+async function executeOperations(operations: PlanResults): Promise<{ totalConsolidated: number }> {
+  const { plannedOps } = operations
+
+  let totalConsolidated = 0
+
+  for (const op of Array.from(plannedOps.values()).slice(0, MAX_OPS)) {
+    console.log('Executing operation:', op)
+
+    if (op.type === 'move') {
+      // Assert that both src and dest are in rootDir
+      assert.truthy(
+        op.src.startsWith(rootDir),
+        `Source path ${op.src} is not in root directory ${rootDir}`,
+      )
+      assert.truthy(
+        op.dest.startsWith(rootDir),
+        `Destination path ${op.dest} is not in root directory ${rootDir}`,
+      )
+
+      await ensureDir(dirname(op.dest))
+      await rename(op.src, op.dest)
+      totalConsolidated++
+      console.log(`📁 ${op.src} → ${op.dest}`)
+
+      continue
+    }
+
+    if (op.type === 'rmdir') {
+      await rmdir(op.dir)
+      console.log(`🗑️  Removed empty directory: ${op.dir}`)
+
+      continue
+    }
+  }
+
+  return {
+    totalConsolidated,
+  }
 }
 
 /**
  * Main entry point
  */
 async function main(): Promise<void> {
-  // Validate process.argv using Zod
-  const validatedArgv = ProcessArgvSchema.parse(process.argv)
-
-  const targetDir = validatedArgv[2]
-
   if (!targetDir) {
     console.error('❌ Usage: bun main.ts ./path/to/dir')
     console.error('')
@@ -414,45 +432,33 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // Validate target directory using Zod
-  const validatedTargetDir: DirPath = DirectoryPathSchema.parse(targetDir)
-  const resolvedDir = resolve(validatedTargetDir)
+  const dirExists = existsSync(rootDir)
 
-  const dirExists = existsSync(resolvedDir)
+  assert.truthy(dirExists, `❌ Directory does not exist: ${rootDir}`)
 
-  if (!dirExists) {
-    console.error(`❌ Directory does not exist: ${resolvedDir}`)
-    process.exit(1)
-  }
-
-  console.log(`📂 Organizing files in: ${resolvedDir}`)
+  console.log(`📂 Organizing files in: ${rootDir}`)
   console.log('')
 
   // Assert directory structure before making changes
   console.log('🔍 Validating directory structure...')
-  await assertYearDirectoryStructure(resolvedDir)
+  await assertYearDirectoryStructure(rootDir)
   console.log('')
 
-  // Consolidate unorganized directories first
-  console.log('🔧 Consolidating unorganized directories...')
-  const consolidationResults = await consolidateUnorganizedDirectories(resolvedDir)
-  console.log(`✅ Consolidated ${consolidationResults.consolidated} files`)
-  if (consolidationResults.errors > 0) {
-    console.log(`⚠️  ${consolidationResults.errors} errors during consolidation`)
-  }
+  const entries = await collectFileStats(rootDir)
+  const operations = planOperations(entries)
+
+  await executeOperations(operations)
+
+  const totalOps = MAX_OPS || operations.plannedMoves.size
+
+  // Log stats
+  console.log('')
+  console.log('Stats:')
+  console.log(`  Total files: ${entries.length}`)
+  console.log(`  Total ops: ${totalOps}`)
   console.log('')
 
-  // Then organize any remaining loose files
-  const results = await organizeFiles(resolvedDir)
-
-  // Display final summary
-  console.log(`\n✅ Organization complete!`)
-  console.log(`📁 Files consolidated: ${consolidationResults.consolidated}`)
-  console.log(`📁 Files organized: ${results.processed}`)
-  console.log(`⏭️  Files skipped: ${results.skipped}`)
-
-  const totalFilesProcessed = consolidationResults.consolidated + results.processed + results.skipped
-  console.log(`📊 Total files examined: ${totalFilesProcessed}`)
+  process.exit(0)
 }
 
 // Run if called directly
