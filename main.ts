@@ -116,6 +116,7 @@ function getTargetPath(file: FileInfo): DestDirPath {
 
   const pathParts: string[] = [
     monthDirName,
+    file.dirent.name,
   ]
 
   const isBeforeCurrentYear = validatedDate.year < new Date().getFullYear()
@@ -125,12 +126,12 @@ function getTargetPath(file: FileInfo): DestDirPath {
     pathParts.unshift(yearDirName)
   }
 
+  // Prepend rootDir
+  pathParts.unshift(rootDir)
+
   const path = DestDirPathSchema.parse(
     join(
-      rootDir,
-      yearDirName,
-      monthDirName,
-      file.dirent.name,
+      ...pathParts,
     ),
   )
 
